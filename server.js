@@ -2,6 +2,7 @@
 const http = require("http");
 const crypto = require("crypto");
 const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 
 const ID_LENGTH = 6;
 const PORT = 8000;
@@ -121,6 +122,41 @@ async function registerUser(username, password) {
   }
 }
 
+async function loginUser(username, password) {
+  if (username.length <= 0 || password.length <= 0) {
+    return { "status": 400, "token": null };
+  }
+  try {
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    console.log("Hashed pass:", passwordHash);
+    const [results] = await connection.query(`
+      SELECT id, username, password_hash FROM users u
+      WHERE u.username = ?`, 
+      [username]
+    );
+    if (results.length <= 0) {
+      console.error("Username not found. Try registering.")
+      return {"status": 401, "token": null };
+    }
+    const user = results[0]
+    const passwordCorrect = await bcrypt.compare(password, user.password_hash);
+    if (!passwordCorrect) {
+      console.error("Wrong password.")
+      return { "status": 401, "token": null };
+    }
+    console.log("login results:", results);
+
+    const token = jwt.sign({userId: user.id}, process.env.JWT_SECRET, {expiresIn: "1h"});
+
+    console.log("token:", token);
+
+    return { "status": 401, "token": token };
+  } catch (err) {
+      console.error("Unexpected error registering:", err);
+      return { "status": 401, "token": null };
+  }
+}
+
 async function startServer() {
   connection = await connectDB();
 
@@ -162,20 +198,37 @@ async function startServer() {
           return;
         }
       } else if (req.url.startsWith("/api/auth")) {
+        let body = "";
+        req.on("data", chunk => {
+          body += chunk;
+        });
+
         if (req.method === "POST" && req.url === "/api/auth/register") {
-          console.log("Entered auth register");
-          let body = "";
-          req.on("data", chunk => {
-            body += chunk;
-          });
           req.on("end", async () => {
             const data = JSON.parse(body);
             const statusCode = await registerUser(data.username, data.password);
             res.writeHead(statusCode, { "Content-Type": "text/plain"});
             res.end();
-          })
+          });
         }
-        if (req.method === "POST" && req.url === "/api/auth/login") {}
+        if (req.method === "POST" && req.url === "/api/auth/login") {
+          console.log("Entered auth login.");
+          req.on("end", async () => {
+            const data = JSON.parse(body);
+            const response = await loginUser(data.username, data.password);
+            res.writeHead(response.status, { "Content-Type": "application/json"});
+            if (response.token) {
+              res.end(JSON.stringify({
+                message: "Login successful.",
+                token: response.token
+              }));
+            } else {
+              res.end(JSON.stringify({
+                message: "Invalid username or password."
+              }));
+            }
+          });
+        }
         if (req.method === "POST" && req.url === "/api/auth/logout") {}
 
       } else if (req.method === "GET") {
