@@ -1,9 +1,11 @@
 ﻿const mysql = require("mysql2/promise");
 const http = require("http");
 const crypto = require("crypto");
+const bcrypt = require("bcrypt");
 
 const ID_LENGTH = 6;
 const PORT = 8000;
+const SALT_ROUNDS = 10;
 
 let connection;
 
@@ -92,16 +94,41 @@ async function deleteLink(id) {
   }
 }
 
-async function registerUser() {
-
+async function registerUser(username, password) {
+  console.log("username:", username);
+  console.log("password:", password);
+  if (username.length <= 0 || password.length <= 0) {
+    return 400;
+  }
+  try {
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    console.log("Hashed pass:", passwordHash);
+    const results = await connection.query(`
+      INSERT INTO users (username, password_hash)
+      VALUES (?, ?)`,
+      [username, passwordHash]
+    );
+    console.log("results:", results);
+    return 201;
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      console.error("Username already exists.");
+      return 409;
+    } else {
+      console.error("Unexpected error registering:", err);
+      return 500;
+    }
+  }
 }
 
 async function startServer() {
   connection = await connectDB();
 
   const server = http.createServer(async (req, res) => {
+    console.log(req.url);
     try {
       if (req.url.startsWith("/api/links")) {
+        console.log("Entered /api/links");
         if (req.method === "DELETE") {
           const id = req.url.replace("/api/links/", "");
           // console.log("id:", id);
@@ -134,9 +161,19 @@ async function startServer() {
 
           return;
         }
-      } else if (req.method.startsWith("/api/auth")) {
+      } else if (req.url.startsWith("/api/auth")) {
         if (req.method === "POST" && req.url === "/api/auth/register") {
-
+          console.log("Entered auth register");
+          let body = "";
+          req.on("data", chunk => {
+            body += chunk;
+          });
+          req.on("end", async () => {
+            const data = JSON.parse(body);
+            const statusCode = await registerUser(data.username, data.password);
+            res.writeHead(statusCode, { "Content-Type": "text/plain"});
+            res.end();
+          })
         }
         if (req.method === "POST" && req.url === "/api/auth/login") {}
         if (req.method === "POST" && req.url === "/api/auth/logout") {}
@@ -160,10 +197,10 @@ async function startServer() {
         });
         res.end();
         return;
+      } else {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not found!");
       }
-
-      res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("Not found!");
     } catch (err) {
       console.error(err);
       res.writeHead(500, { "Content-Type": "text/plain" });
