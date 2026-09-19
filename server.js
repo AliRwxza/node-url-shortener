@@ -9,6 +9,8 @@ const SALT_ROUNDS = 10;
 
 let connection;
 
+require("dotenv").config();
+
 async function connectDB() {
   const connection = await mysql.createConnection({
     host: process.env.DB_HOST,
@@ -30,6 +32,14 @@ function generateId(length) {
   }
 
   return id;
+}
+
+function responseHelper(res, statusCode, header, message="") {
+  console.log(typeof res.writeHead);
+  console.log("res", res);
+  res.writeHead(statusCode, header);
+  res.end(message);
+  return;
 }
 
 async function insertLink(url, customId, userId) {
@@ -83,7 +93,7 @@ async function deleteLink(id, userId) {
 
 async function retrieveLinks(userId) {
   try {
-    const [rows] = await connection.query(`SELECT url FROM LINKS WHERE user_id = ?`,
+    const [rows] = await connection.query(`SELECT id, url, created_at FROM LINKS WHERE user_id = ?`,
       [userId]
     );
     return { statusCode: 200, links: rows };
@@ -169,10 +179,10 @@ async function startServer() {
   const server = http.createServer(async (req, res) => {
     try {
       if (req.url.startsWith("/api/links")) {
+        const trimmedUrl = req.url.replace("/api/links", "");
         const user = authenticateUser(req);
         if (!user) {
-          res.writeHead(401, { "Content-Type": "text/plain" });
-          res.end();
+          responseHelper(res, 401, { "Content-Type": "text/plain" });
           return;
         }
         const userId = user.userId;
@@ -183,15 +193,13 @@ async function startServer() {
           }
           const id = req.url.replace("/api/links/", "");
           const statusCode = await deleteLink(id, userId);
-          res.writeHead(statusCode, { "Content-Type": "text/plain" });
-          res.end();
+          responseHelper(res, statusCode, { "Content-Type": "text/plain" });
           return;
         }
 
         if (req.method === "GET") {
           const results = await retrieveLinks(userId);
-          res.writeHead(results.statusCode, { "Content-Type": "application/json"});
-          res.end(JSON.stringify(results.links));
+          responseHelper(res, results.statusCode, { "Content-Type": "text/plain" }, JSON.stringify(results.links));
           return;
         }
 
@@ -205,8 +213,7 @@ async function startServer() {
           req.on("end", async () => {
             const data = JSON.parse(body);
             const statusCode = await insertLink(data.url, data.customId, userId);
-            res.writeHead(statusCode, { "Content-Type": "text/plain" });
-            res.end();
+            responseHelper(res, statusCode, { "Content-Type": "text/plain" })
           });
 
           return;
@@ -221,24 +228,21 @@ async function startServer() {
           req.on("end", async () => {
             const data = JSON.parse(body);
             const statusCode = await registerUser(data.username, data.password);
-            res.writeHead(statusCode, { "Content-Type": "text/plain"});
-            res.end();
+            responseHelper(res, statusCode, { "Content-Type": "text/plain" });
           });
         }
         if (req.method === "POST" && req.url === "/api/auth/login") {
           req.on("end", async () => {
             const data = JSON.parse(body);
             const response = await loginUser(data.username, data.password);
-            res.writeHead(response.status, { "Content-Type": "application/json"});
             if (response.token) {
-              res.end(JSON.stringify({
+              responseHelper(res, response.status, { "Content-Type": "application/json" }, JSON.stringify({
                 message: "Login successful.",
                 token: response.token
               }));
             } else {
-              res.end(JSON.stringify({
-                message: "Invalid username or password."
-              }));
+              responseHelper(res, response.statusCode, { "Content-Type": "application/json" }, 
+                JSON.stringify({ message: "Invalid username or password" }));
             }
           });
         }
@@ -248,28 +252,23 @@ async function startServer() {
         const code = req.url.substring(1);
 
         const [results] = await connection.query(
-          "SELECT id, url, created_at FROM links WHERE id = ?",
+          "SELECT url FROM links WHERE id = ?",
           [code],
         );
 
         if (!results.length) {
-          res.writeHead(404, { "Content-Type": "text/plain" });
-          res.end("Link not found");
+          responseHelper(res, 404, { "Content-Type": "text/plain" }, "Link not found");
           return;
         }
 
-        res.writeHead(302, {
-          Location: results[0].url,
-        });
-        res.end();
+        responseHelper(res, 302, { Location: results[0].url })
         return;
       } else {
-        res.writeHead(404, { "Content-Type": "text/plain" });
-        res.end("Not found!");
+        responseHelper(res, 404, { "Content-Type": "text/plain"})
       }
     } catch (err) {
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end("Internal Server Error");
+      console.error(err);
+      responseHelper(res, 500, { "Content-Type": "text/plain" }, "Internal Server Error");
     }
   });
 
