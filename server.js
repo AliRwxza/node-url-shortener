@@ -166,11 +166,17 @@ async function retrieveLinks(userId) {
 }
 
 async function registerUser(username, password) {
-  if (username.length <= 0 || password.length <= 0) {
+  if (!username || !password) {
     return 400;
   }
   try {
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    const [dupCheck] = await connection.query(`SELECT id FROM users WHERE username = ?`,
+      [username]
+    );
+    if (dupCheck.length > 0) {
+      return 409;
+    }
     const results = await connection.query(`
       INSERT INTO users (username, password_hash)
       VALUES (?, ?)`,
