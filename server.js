@@ -35,62 +35,56 @@ function generateId(length) {
   return id;
 }
 
-async function insertLink(url, customId) {
+async function insertLink(url, customId, userId) {
   // console.log("Inserting link:", url, customId);
-  if (customId) {
-    // console.log("Custom ID provided:", customId);
-    try {
-      const results = await connection.query(
-        `INSERT INTO links (id, url)
-        VALUES (?, ?)`,
-        [customId, url],
-      );
-      // console.log("results:", results);
-    } catch (err) {
-      if (err.code === "ER_DUP_ENTRY") {
-        console.error("Duplicate entry for custom ID:", customId);
-        return 409;
-      } else {
-        console.error("Error inserting link:", err);
-        return 500;
-      }
-    }
-    return 201;
-  } else {
+  if (!customId) {
     // console.log("Only URL is provided");
     let repeat = 0;
+    let genId = "";
     while (repeat++ < 10) {
-      const id = generateId(ID_LENGTH);
-      // console.log("Generated ID:", id);
-      try {
-        const results = await connection.query(
-          `INSERT INTO links (id, url)
-            VALUES (?, ?)`,
-          [id, url],
-        );
-        // console.log("results:", results);
-        return 201;
-      } catch (err) {
-        if (err.code === "ER_DUP_ENTRY") {
-          console.error("Duplicate entry for generated ID:", id);
-        } else {
-          console.error("Unexpected error inserting link:", err);
-          return 500; // Faced an unexpected error while inserting the link
-        }
+      genId = generateId(ID_LENGTH);
+      const [rows] = await connection.query(
+      `SELECT id FROM links WHERE id = ?`,
+      [genId]);
+      if (rows.length === 0) {
+        customId = genId;
+        break;
       }
+    } 
+    if (!customId) return 409;
+  }
+  try {
+    const results = await connection.query(
+      `INSERT INTO links (id, url, user_id)
+      VALUES (?, ?, ?)`,
+      [customId, url, userId],
+    );
+    // console.log("results:", results);
+    return 201;
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      console.error("Duplicate entry for custom ID:", customId);
+      return 409;
+    } else {
+      console.error("Error inserting link:", err);
+      return 500;
     }
-    return 409; // Return 409 if unable to generate a unique ID after 10 attempts
   }
 }
 
-async function deleteLink(id) {
+async function deleteLink(id, userId) {
   try {
-    const results = await connection.query(`DELETE FROM links WHERE id = ?`, [
-      id,
+    const results = await connection.query(`DELETE FROM links WHERE id = ? AND user_id = ?`, [
+      id, userId
     ]);
+    console.log(results);
     return results[0].affectedRows > 0 ? 204 : 404;
   } catch (err) {
     console.error("Error deleting link:", err);
+    if (err.name === "JsonWebTokenError") {
+      console.log("Unauthorized.");
+      return 401;
+    }
     return 500;
   }
 }
@@ -184,10 +178,18 @@ async function startServer() {
       if (req.url.startsWith("/api/links")) {
         console.log("Entered /api/links");
         if (req.method === "DELETE") { //ADD AUTH
+          const user = authenticateUser(req);
+          if (!user) {
+            res.writeHead(401, { "Content-Type": "text/plain" });
+            res.end();
+            return null;
+          }
+
+          const userId = user.userId;
           const id = req.url.replace("/api/links/", "");
           // console.log("id:", id);
           // console.log("req.url:", req.url);
-          const statusCode = await deleteLink(id);
+          const statusCode = await deleteLink(id, userId);
           res.writeHead(statusCode, { "Content-Type": "text/plain" });
           res.end();
           return;
@@ -200,6 +202,16 @@ async function startServer() {
         }
 
         if (req.method === "POST") { // ADD AUTH
+          const decode = authenticateUser(req);
+          if (!decode) {
+            res.writeHead(401, { "Content-Type": "text/plain" })
+            res.end("User not found");
+            return;
+          }
+          console.log(typeof decode, decode);
+
+          const userId = decode.userId;
+          console.log("User Id: ", userId);
           let body = "";
 
           req.on("data", (chunk) => {
@@ -208,7 +220,7 @@ async function startServer() {
 
           req.on("end", async () => {
             const data = JSON.parse(body);
-            const statusCode = await insertLink(data.url, data.customId);
+            const statusCode = await insertLink(data.url, data.customId, userId);
             res.writeHead(statusCode, { "Content-Type": "text/plain" });
             res.end();
           });
