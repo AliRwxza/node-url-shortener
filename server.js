@@ -17,8 +17,6 @@ async function connectDB() {
     database: process.env.DB_NAME,
   });
 
-  console.log("Connected to link_shortener");
-
   return connection;
 }
 
@@ -59,10 +57,8 @@ async function insertLink(url, customId, userId) {
     return 201;
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
-      console.error("Duplicate entry for custom ID:", customId);
       return 409;
     } else {
-      console.error("Error inserting link:", err);
       return 500;
     }
   }
@@ -78,9 +74,7 @@ async function deleteLink(id, userId) {
     ]);
     return results[0].affectedRows > 0 ? 204 : 404;
   } catch (err) {
-    console.error("Error deleting link:", err);
     if (err.name === "JsonWebTokenError") {
-      console.log("Unauthorized.");
       return 401;
     }
     return 500;
@@ -94,7 +88,6 @@ async function retrieveLinks(userId) {
     );
     return { statusCode: 200, links: rows };
   } catch (err) {
-    console.error("Error retrieving user's created shortlinks.");
     return { statusCode: 500 };
   }
 }
@@ -113,10 +106,8 @@ async function registerUser(username, password) {
     return 201;
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
-      console.error("Username already exists.");
       return 409;
     } else {
-      console.error("Unexpected error registering:", err);
       return 500;
     }
   }
@@ -133,13 +124,11 @@ async function loginUser(username, password) {
       [username]
     );
     if (results.length <= 0) {
-      console.error("Username not found. Try registering.")
       return {"status": 401, "token": null };
     }
     const user = results[0]
     const passwordCorrect = await bcrypt.compare(password, user.password_hash);
     if (!passwordCorrect) {
-      console.error("Wrong password.")
       return { "status": 401, "token": null };
     }
 
@@ -147,7 +136,6 @@ async function loginUser(username, password) {
 
     return { "status": 200, "token": token };
   } catch (err) {
-      console.error("Unexpected error registering:", err);
       return { "status": 401, "token": null };
   }
 }
@@ -170,7 +158,6 @@ function authenticateUser(req) {
     return decode;
   } catch (err) {
     if (err.name === "TokenExpiredError") {
-      console.error("JWT expired.");
       return null;
     }
   }
@@ -281,14 +268,12 @@ async function startServer() {
         res.end("Not found!");
       }
     } catch (err) {
-      console.error(err);
       res.writeHead(500, { "Content-Type": "text/plain" });
       res.end("Internal Server Error");
     }
   });
 
   server.listen(PORT, () => {
-    console.log("Server is running on port " + PORT);
   });
 }
 
