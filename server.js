@@ -1,6 +1,5 @@
 ﻿const mysql = require("mysql2/promise");
 const http = require("http");
-const crypto = require("crypto");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
@@ -29,7 +28,7 @@ function generateId(length) {
   let id = "";
 
   for (let i = 0; i < length; i++) {
-    id += chars[crypto.randomInt(0, chars.length)];
+    id += chars[Math.floor(Math.random() * 62)];
   }
 
   return id;
