@@ -36,9 +36,7 @@ function generateId(length) {
 }
 
 async function insertLink(url, customId, userId) {
-  // console.log("Inserting link:", url, customId);
   if (!customId) {
-    // console.log("Only URL is provided");
     let repeat = 0;
     let genId = "";
     while (repeat++ < 10) {
@@ -59,7 +57,6 @@ async function insertLink(url, customId, userId) {
       VALUES (?, ?, ?)`,
       [customId, url, userId],
     );
-    // console.log("results:", results);
     return 201;
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -73,11 +70,13 @@ async function insertLink(url, customId, userId) {
 }
 
 async function deleteLink(id, userId) {
+  if (!id) {
+    return 400;
+  }
   try {
     const results = await connection.query(`DELETE FROM links WHERE id = ? AND user_id = ?`, [
       id, userId
     ]);
-    console.log(results);
     return results[0].affectedRows > 0 ? 204 : 404;
   } catch (err) {
     console.error("Error deleting link:", err);
@@ -89,21 +88,29 @@ async function deleteLink(id, userId) {
   }
 }
 
+async function retrieveLinks(userId) {
+  try {
+    const [rows] = await connection.query(`SELECT url FROM LINKS WHERE user_id = ?`,
+      [userId]
+    );
+    return { statusCode: 200, links: rows };
+  } catch (err) {
+    console.error("Error retrieving user's created shortlinks.");
+    return { statusCode: 500 };
+  }
+}
+
 async function registerUser(username, password) {
-  console.log("username:", username);
-  console.log("password:", password);
   if (username.length <= 0 || password.length <= 0) {
     return 400;
   }
   try {
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    console.log("Hashed pass:", passwordHash);
     const results = await connection.query(`
       INSERT INTO users (username, password_hash)
       VALUES (?, ?)`,
       [username, passwordHash]
     );
-    console.log("results:", results);
     return 201;
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -121,8 +128,6 @@ async function loginUser(username, password) {
     return { "status": 400, "token": null };
   }
   try {
-    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    console.log("Hashed pass:", passwordHash);
     const [results] = await connection.query(`
       SELECT id, username, password_hash FROM users u
       WHERE u.username = ?`, 
@@ -138,11 +143,8 @@ async function loginUser(username, password) {
       console.error("Wrong password.")
       return { "status": 401, "token": null };
     }
-    console.log("login results:", results);
 
     const token = jwt.sign({userId: user.id}, process.env.JWT_SECRET, {expiresIn: "1h"});
-
-    console.log("token:", token);
 
     return { "status": 200, "token": token };
   } catch (err) {
@@ -164,54 +166,50 @@ function authenticateUser(req) {
     return null;
   }
 
-  const decode = jwt.verify(token, process.env.JWT_SECRET);
-  console.log("decode:", decode);
-  return decode;
+  try {
+    const decode = jwt.verify(token, process.env.JWT_SECRET);
+    return decode;
+  } catch (err) {
+    if (err.name === "TokenExpiredError") {
+      console.error("JWT expired.");
+      return null;
+    }
+  }
 }
 
 async function startServer() {
   connection = await connectDB();
 
   const server = http.createServer(async (req, res) => {
-    console.log(req.url);
     try {
       if (req.url.startsWith("/api/links")) {
-        console.log("Entered /api/links");
-        if (req.method === "DELETE") { //ADD AUTH
-          const user = authenticateUser(req);
-          if (!user) {
-            res.writeHead(401, { "Content-Type": "text/plain" });
-            res.end();
-            return null;
-          }
+        const user = authenticateUser(req);
+        if (!user) {
+          res.writeHead(401, { "Content-Type": "text/plain" });
+          res.end();
+          return;
+        }
+        const userId = user.userId;
 
-          const userId = user.userId;
+        if (req.method === "DELETE") {
+          if (!req.url.startsWith("/api/links/")) {
+            return 400;
+          }
           const id = req.url.replace("/api/links/", "");
-          // console.log("id:", id);
-          // console.log("req.url:", req.url);
           const statusCode = await deleteLink(id, userId);
           res.writeHead(statusCode, { "Content-Type": "text/plain" });
           res.end();
           return;
         }
 
-        if (req.method === "GET") { // ADD AUTH
-          res.writeHead(200, { "Content-Type": "text/plain" });
-          res.end("Get Method.");
+        if (req.method === "GET") {
+          const results = await retrieveLinks(userId);
+          res.writeHead(results.statusCode, { "Content-Type": "application/json"});
+          res.end(JSON.stringify(results.links));
           return;
         }
 
-        if (req.method === "POST") { // ADD AUTH
-          const decode = authenticateUser(req);
-          if (!decode) {
-            res.writeHead(401, { "Content-Type": "text/plain" })
-            res.end("User not found");
-            return;
-          }
-          console.log(typeof decode, decode);
-
-          const userId = decode.userId;
-          console.log("User Id: ", userId);
+        if (req.method === "POST") {
           let body = "";
 
           req.on("data", (chunk) => {
@@ -242,7 +240,6 @@ async function startServer() {
           });
         }
         if (req.method === "POST" && req.url === "/api/auth/login") {
-          console.log("Entered auth login.");
           req.on("end", async () => {
             const data = JSON.parse(body);
             const response = await loginUser(data.username, data.password);
@@ -265,7 +262,7 @@ async function startServer() {
         const code = req.url.substring(1);
 
         const [results] = await connection.query(
-          "SELECT url FROM links WHERE id = ?",
+          "SELECT id, url, created_at FROM links WHERE id = ?",
           [code],
         );
 
