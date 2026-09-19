@@ -2,6 +2,7 @@
 const http = require("http");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const { connect } = require("http2");
 
 const ID_LENGTH = 6;
 const PORT = 8000;
@@ -20,6 +21,45 @@ async function connectDB() {
   });
 
   return connection;
+}
+
+async function migrate() {
+  console.log("connecting to mysql");
+  const connection = await mysql.createConnection({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+  });
+  console.log
+  try {
+    await connection.query(`CREATE DATABASE IF NOT EXISTS link_shortener`);
+    await connection.query(`USE link_shortener`);
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        username VARCHAR(25) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+
+        PRIMARY KEY (id),
+        UNIQUE KEY (username)
+      )`);
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS links (
+          id VARCHAR(20) NOT NULL,
+          url TEXT NOT NULL,
+          user_id INT UNSIGNED DEFAULT NULL,
+          created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+
+          PRIMARY KEY (id),
+          FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        `);
+    console.log("Database migration completed.");
+    return connection;
+  } catch(err) {
+    console.error(err);
+  }
 }
 
 function generateId(length) {
@@ -174,7 +214,7 @@ function authenticateUser(req) {
 }
 
 async function startServer() {
-  connection = await connectDB();
+  connection = await migrate();
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -241,7 +281,7 @@ async function startServer() {
                 token: response.token
               }));
             } else {
-              responseHelper(res, response.statusCode, { "Content-Type": "application/json" }, 
+              responseHelper(res, response.status, { "Content-Type": "application/json" }, 
                 JSON.stringify({ message: "Invalid username or password" }));
             }
           });
