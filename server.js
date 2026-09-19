@@ -150,11 +150,29 @@ async function loginUser(username, password) {
 
     console.log("token:", token);
 
-    return { "status": 401, "token": token };
+    return { "status": 200, "token": token };
   } catch (err) {
       console.error("Unexpected error registering:", err);
       return { "status": 401, "token": null };
   }
+}
+
+function authenticateUser(req) {
+  const header = req.headers.authorization;
+
+  if (!header) {
+    return null;
+  }
+
+  const [type, token] = header.split(" ");
+
+  if (type !== "Bearer" || !token) {
+    return null;
+  }
+
+  const decode = jwt.verify(token, process.env.JWT_SECRET);
+  console.log("decode:", decode);
+  return decode;
 }
 
 async function startServer() {
@@ -165,7 +183,7 @@ async function startServer() {
     try {
       if (req.url.startsWith("/api/links")) {
         console.log("Entered /api/links");
-        if (req.method === "DELETE") {
+        if (req.method === "DELETE") { //ADD AUTH
           const id = req.url.replace("/api/links/", "");
           // console.log("id:", id);
           // console.log("req.url:", req.url);
@@ -175,13 +193,13 @@ async function startServer() {
           return;
         }
 
-        if (req.method === "GET") {
+        if (req.method === "GET") { // ADD AUTH
           res.writeHead(200, { "Content-Type": "text/plain" });
           res.end("Get Method.");
           return;
         }
 
-        if (req.method === "POST") {
+        if (req.method === "POST") { // ADD AUTH
           let body = "";
 
           req.on("data", (chunk) => {
