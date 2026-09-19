@@ -2,7 +2,6 @@
 const http = require("http");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const { connect } = require("http2");
 
 const ID_LENGTH = 6;
 const PORT = 8000;
@@ -12,17 +11,6 @@ let connection;
 
 require("dotenv").config();
 
-async function connectDB() {
-  const connection = await mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-  });
-
-  return connection;
-}
-
 async function migrate() {
   console.log("connecting to mysql");
   const connection = await mysql.createConnection({
@@ -30,7 +18,6 @@ async function migrate() {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
   });
-  console.log
   try {
     await connection.query(`CREATE DATABASE IF NOT EXISTS link_shortener`);
     await connection.query(`USE link_shortener`);
@@ -46,7 +33,8 @@ async function migrate() {
       )`);
       await connection.query(`
         CREATE TABLE IF NOT EXISTS links (
-          id VARCHAR(20) NOT NULL,
+          id INT UNSIGNED AUTO_INCREMENT,
+          alias VARCHAR(20) NOT NULL UNIQUE,
           url TEXT NOT NULL,
           user_id INT UNSIGNED DEFAULT NULL,
           click_count INT UNSIGNED DEFAULT 0,
@@ -55,8 +43,8 @@ async function migrate() {
 
           PRIMARY KEY (id),
           FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-        `);
+        )`);
+
     console.log("Database migration completed.");
     return connection;
   } catch(err) {
@@ -64,12 +52,12 @@ async function migrate() {
   }
 }
 
-async function incrementClicks(id) {
+async function incrementClicks(alias) {
   await connection.query(`
     UPDATE links
     SET click_count = click_count + 1
-    WHERE id = ?`,
-  [id]);
+    WHERE alias = ?`,
+  [alias]);
 }
 
 function generateId(length) {
@@ -85,47 +73,50 @@ function generateId(length) {
 }
 
 function responseHelper(res, statusCode, header, message="") {
-  console.log(typeof res.writeHead);
-  console.log("res", res);
   res.writeHead(statusCode, header);
   res.end(message);
   return;
 }
 
-async function insertLink(url, customId, userId, expiry=undefined) {
-  if (!customId) {
+async function insertLink(url, customAlias, userId, expiry=undefined) {
+  if (!customAlias) {
     let repeat = 0;
     let genId = "";
     while (repeat++ < 10) {
       genId = generateId(ID_LENGTH);
       const [rows] = await connection.query(
-      `SELECT id FROM links WHERE id = ?`,
+      `SELECT alias FROM links WHERE alias = ?`,
       [genId]);
       if (rows.length === 0) {
-        customId = genId;
+        customAlias = genId;
         break;
       }
     } 
-    if (!customId) return 409;
+    const [results] = await connection.query(
+      `SELECT alias FROM links WHERE alias = ?`,
+      [customAlias]);
+    if (results.length > 0) {
+      return 409;
+    }
   }
   try {
     if (expiry === undefined) {
       await connection.query(
-        `INSERT INTO links (id, url, user_id)
+        `INSERT INTO links (alias, url, user_id)
         VALUES (?, ?, ?)`,
-        [customId, url, userId],
+        [customAlias, url, userId],
       );
     } else if (expiry === null) {
       await connection.query(
-        `INSERT INTO links (id, url, user_id, expires_at)
+        `INSERT INTO links (alias, url, user_id, expires_at)
         VALUES (?, ?, ?, ?)`,
-        [customId, url, userId, null],
+        [customAlias, url, userId, null],
       );
     } else {
       await connection.query(
-        `INSERT INTO links (id, url, user_id, expires_at)
+        `INSERT INTO links (alias, url, user_id, expires_at)
         VALUES (?, ?, ?, ?)`,
-        [customId, url, userId, new Date(Date.now() + expiry*1000)],
+        [customAlias, url, userId, new Date(Date.now() + expiry*1000)],
       );
     }
     
@@ -139,17 +130,22 @@ async function insertLink(url, customId, userId, expiry=undefined) {
   }
 }
 
-async function deleteLink(id, userId) {
-  if (!id) {
+async function deleteLink(alias, userId) {
+  if (!alias) {
     return 400;
   }
   try {
-    const results = await connection.query(`SELECT id, user_id FROM links WHERE id = ?`, 
-      [id]);
+    const [results]  = await connection.query(`SELECT alias, user_id FROM links WHERE alias = ?`, 
+      [alias]);
+    
+    if (results.length <=0 || !results[0].user_id) {
+      return 404;
+    }
     if (userId !== results[0].user_id) {
       return 403;
     }
-    return results[0].affectedRows > 0;
+    const [deleteResults] = await connection.query(`DELETE FROM links WHERE alias = ?`, [alias]);
+    return deleteResults.affectedRows > 0 ? 204 : 404;
   } catch (err) {
     if (err.name === "JsonWebTokenError") {
       return 401;
@@ -160,7 +156,7 @@ async function deleteLink(id, userId) {
 
 async function retrieveLinks(userId) {
   try {
-    const [rows] = await connection.query(`SELECT id, url, created_at FROM LINKS WHERE user_id = ?`,
+    const [rows] = await connection.query(`SELECT alias, url, created_at FROM LINKS WHERE user_id = ?`,
       [userId]
     );
     return { statusCode: 200, links: rows };
@@ -258,8 +254,8 @@ async function startServer() {
           if (!req.url.startsWith("/api/links/")) {
             return responseHelper(res, 400, { "Content-Type": "text/plain" });
           }
-          const id = req.url.replace("/api/links/", "");
-          const statusCode = await deleteLink(id, userId);
+          const alias = req.url.replace("/api/links/", "");
+          const statusCode = await deleteLink(alias, userId);
           responseHelper(res, statusCode, { "Content-Type": "text/plain" });
           return;
         }
@@ -279,7 +275,7 @@ async function startServer() {
 
           req.on("end", async () => {
             const data = JSON.parse(body);
-            const statusCode = await insertLink(data.url, data.customId, userId);
+            const statusCode = await insertLink(data.url, data.customAlias, userId, data.expiry);
             responseHelper(res, statusCode, { "Content-Type": "text/plain" })
           });
 
@@ -316,11 +312,11 @@ async function startServer() {
         if (req.method === "POST" && req.url === "/api/auth/logout") {}
 
       } else if (req.method === "GET") {
-        const id = req.url.substring(1);
+        const alias = req.url.substring(1);
 
         const [results] = await connection.query(
-          "SELECT url, expires_at FROM links WHERE id = ?",
-          [id],
+          "SELECT url, expires_at FROM links WHERE alias = ?",
+          [alias],
         );
 
         if (!results.length) {
@@ -334,7 +330,7 @@ async function startServer() {
           return;
         }
 
-        incrementClicks(id);
+        incrementClicks(alias);
 
         responseHelper(res, 302, { Location: results[0].url })
         return;
