@@ -12,10 +12,10 @@ let connection;
 
 async function connectDB() {
   const connection = await mysql.createConnection({
-    host: "localhost",
-    user: "root",
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: "link_shortener",
+    database: process.env.DB_NAME,
   });
 
   console.log("Connected to link_shortener");
