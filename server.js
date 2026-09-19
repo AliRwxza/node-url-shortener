@@ -49,7 +49,9 @@ async function migrate() {
           id VARCHAR(20) NOT NULL,
           url TEXT NOT NULL,
           user_id INT UNSIGNED DEFAULT NULL,
+          click_count INT UNSIGNED DEFAULT 0,
           created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+          expires_at TIMESTAMP NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL 1 HOUR),
 
           PRIMARY KEY (id),
           FOREIGN KEY (user_id) REFERENCES users(id)
@@ -60,6 +62,14 @@ async function migrate() {
   } catch(err) {
     console.error(err);
   }
+}
+
+async function incrementClicks(id) {
+  await connection.query(`
+    UPDATE links
+    SET click_count = click_count + 1
+    WHERE id = ?`,
+  [id]);
 }
 
 function generateId(length) {
@@ -82,7 +92,7 @@ function responseHelper(res, statusCode, header, message="") {
   return;
 }
 
-async function insertLink(url, customId, userId) {
+async function insertLink(url, customId, userId, expiry=undefined) {
   if (!customId) {
     let repeat = 0;
     let genId = "";
@@ -99,11 +109,26 @@ async function insertLink(url, customId, userId) {
     if (!customId) return 409;
   }
   try {
-    const results = await connection.query(
-      `INSERT INTO links (id, url, user_id)
-      VALUES (?, ?, ?)`,
-      [customId, url, userId],
-    );
+    if (expiry === undefined) {
+      await connection.query(
+        `INSERT INTO links (id, url, user_id)
+        VALUES (?, ?, ?)`,
+        [customId, url, userId],
+      );
+    } else if (expiry === null) {
+      await connection.query(
+        `INSERT INTO links (id, url, user_id, expires_at)
+        VALUES (?, ?, ?, ?)`,
+        [customId, url, userId, null],
+      );
+    } else {
+      await connection.query(
+        `INSERT INTO links (id, url, user_id, expires_at)
+        VALUES (?, ?, ?, ?)`,
+        [customId, url, userId, new Date(Date.now() + expiry*1000)],
+      );
+    }
+    
     return 201;
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
@@ -119,10 +144,12 @@ async function deleteLink(id, userId) {
     return 400;
   }
   try {
-    const results = await connection.query(`DELETE FROM links WHERE id = ? AND user_id = ?`, [
-      id, userId
-    ]);
-    return results[0].affectedRows > 0 ? 204 : 404;
+    const results = await connection.query(`SELECT id, user_id FROM links WHERE id = ?`, 
+      [id]);
+    if (userId !== results[0].user_id) {
+      return 403;
+    }
+    return results[0].affectedRows > 0;
   } catch (err) {
     if (err.name === "JsonWebTokenError") {
       return 401;
@@ -229,7 +256,7 @@ async function startServer() {
 
         if (req.method === "DELETE") {
           if (!req.url.startsWith("/api/links/")) {
-            return 400;
+            return responseHelper(res, 400, { "Content-Type": "text/plain" });
           }
           const id = req.url.replace("/api/links/", "");
           const statusCode = await deleteLink(id, userId);
@@ -289,17 +316,25 @@ async function startServer() {
         if (req.method === "POST" && req.url === "/api/auth/logout") {}
 
       } else if (req.method === "GET") {
-        const code = req.url.substring(1);
+        const id = req.url.substring(1);
 
         const [results] = await connection.query(
-          "SELECT url FROM links WHERE id = ?",
-          [code],
+          "SELECT url, expires_at FROM links WHERE id = ?",
+          [id],
         );
 
         if (!results.length) {
           responseHelper(res, 404, { "Content-Type": "text/plain" }, "Link not found");
           return;
         }
+
+        const expiresAt = results[0].expires_at;
+        if (expiresAt && expiresAt <= new Date()) {
+          responseHelper(res, 404, { "Content-Type": "text/plain" }, "This short link has expired");
+          return;
+        }
+
+        incrementClicks(id);
 
         responseHelper(res, 302, { Location: results[0].url })
         return;
