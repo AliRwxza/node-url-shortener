@@ -85,10 +85,28 @@ function generateId(length) {
   return id;
 }
 
-function responseHelper(res, statusCode, header, content="") {
+function responseHelper(res, statusCode, header, content="", notString=false) {
   res.writeHead(statusCode, header);
-  res.end(content);
+  res.end(notString ? content : JSON.stringify(content));
   return;
+}
+
+async function extractBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+
+    req.on("end", () => {
+      resolve(body);
+    });
+
+    req.on("error", error => {
+      reject(error);
+    });
+  });
 }
 
 async function insertLink(url, customAlias, userId, expiry=undefined) {
@@ -109,7 +127,7 @@ async function insertLink(url, customAlias, userId, expiry=undefined) {
       `SELECT alias FROM links WHERE alias = ?`,
       [customAlias]);
     if (results.length > 0) {
-      return 409;
+      return {status: 409, message: "This alias already exists"};
     }
   }
   try {
@@ -133,37 +151,39 @@ async function insertLink(url, customAlias, userId, expiry=undefined) {
       );
     }
     
-    return 201;
+    return {status: 201, message: "Short link created"};
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
-      return 409;
+      return {status: 409, message: "This alias already exists"};
     } else {
-      return 500;
+      return {status: 500, message: "Server is unable to complete your request."};
     }
   }
 }
 
 async function deleteLink(alias, userId) {
   if (!alias) {
-    return 400;
+    return { status: 400, message: "No short link provided." };
   }
   try {
     const [results]  = await connection.query(`SELECT alias, user_id FROM links WHERE alias = ?`, 
       [alias]);
     
     if (results.length <=0 || !results[0].user_id) {
-      return 404;
+      return { status: 404, message: "No short links found for this user." };
     }
     if (userId !== results[0].user_id) {
-      return 403;
+      return { status: 403, message: "This user is not allowed to delete or modify this link." };
     }
     const [deleteResults] = await connection.query(`DELETE FROM links WHERE alias = ?`, [alias]);
-    return deleteResults.affectedRows > 0 ? 204 : 404;
+    return deleteResults.affectedRows > 0 ?
+      { status: 204 } : 
+      { status: 404, message: "No short links found for this user." };
   } catch (err) {
     if (err.name === "JsonWebTokenError") {
-      return 401;
+      return {status: 401, message: "Invalid authentication." };
     }
-    return 500;
+    return { status: 500, message: "Server unable to complete your request." };
   }
 }
 
@@ -172,15 +192,15 @@ async function retrieveLinks(userId) {
     const [rows] = await connection.query(`SELECT alias, url, created_at FROM LINKS WHERE user_id = ?`,
       [userId]
     );
-    return { statusCode: 200, links: rows };
+    return { status: 200, message: rows };
   } catch (err) {
-    return { statusCode: 500 };
+    return { status: 500, message: "Server unable to complete your request." };
   }
 }
 
 async function registerUser(username, password) {
   if (!username || !password) {
-    return 400;
+    return {status: 400, message: "Username or password not provided."};
   }
   try {
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -188,26 +208,26 @@ async function registerUser(username, password) {
       [username]
     );
     if (dupCheck.length > 0) {
-      return 409;
+      return {status: 409, message: "This username is taken"};
     }
     const results = await connection.query(`
       INSERT INTO users (username, password_hash)
       VALUES (?, ?)`,
       [username, passwordHash]
     );
-    return 201;
+    return {status: 201, message: "User registered"};
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") {
-      return 409;
+      return {status: 409, message: "This username is taken"};
     } else {
-      return 500;
+      return {status: 500, message: "Server is unable to complete your request."};
     }
   }
 }
 
 async function loginUser(username, password) {
   if (username.length <= 0 || password.length <= 0) {
-    return { "status": 400, "token": null };
+    return { status: 400, token: null, message: "Username or password not provided" };
   }
   try {
     const [results] = await connection.query(`
@@ -216,19 +236,19 @@ async function loginUser(username, password) {
       [username]
     );
     if (results.length <= 0) {
-      return {"status": 401, "token": null };
+      return {status: 401, token: null, message: "Incorrect username"};
     }
     const user = results[0]
     const passwordCorrect = await bcrypt.compare(password, user.password_hash);
     if (!passwordCorrect) {
-      return { "status": 401, "token": null };
+      return { status: 401, token: null, message: "Incorrect password" };
     }
 
     const token = jwt.sign({userId: user.id}, process.env.JWT_SECRET, {expiresIn: "1h"});
 
-    return { "status": 200, "token": token };
+    return { status: 200, token: token, message: "Logged in successfully" };
   } catch (err) {
-      return { "status": 401, "token": null };
+      return { status: 401, token: null, message: "Login failed" };
   }
 }
 
@@ -270,11 +290,11 @@ async function startServer() {
           [alias]);
 
           if (results.length === 0) {
-            responseHelper(res, 404, { "Content-Type": "application/json" }, JSON.stringify({ "error": "Link not found" }));
+            responseHelper(res, 404, { "Content-Type": "application/json" }, { "error": "Link not found" });
             return;
           }
           if (results[0].expires_at !== null && results[0].expires_at <= new Date()) {
-            responseHelper(res, 410, { "Content-Type": "application/json" }, JSON.stringify({ "error": "Link has expired" }));
+            responseHelper(res, 410, { "Content-Type": "application/json" }, { "error": "Link has expired" });
             return;
           }
           
@@ -286,46 +306,39 @@ async function startServer() {
             }
           );
 
-          responseHelper(res, 200, { "Content-Type": "image/png", "Content-Length": qrBuffer.length }, qrBuffer);
+          responseHelper(res, 200, { "Content-Type": "image/png", "Content-Length": qrBuffer.length }, qrBuffer, true);
           return;
         }
 
         const user = authenticateUser(req);
         if (!user) {
-          responseHelper(res, 401, { "Content-Type": "text/plain" });
+          responseHelper(res, 401, { "Content-Type": "application/json" }, { "error": "Unauthorized." });
           return;
         }
         const userId = user.userId;
-
         if (req.method === "DELETE") {
-          if (!req.url.startsWith("/api/links/")) {
-            return responseHelper(res, 400, { "Content-Type": "text/plain" });
+          if (url[0] !== "/") {
+            responseHelper(res, 400, { "Content-Type": "application/json" }, { "error": "No short link provided." });
+            return; 
           }
-          const alias = req.url.replace("/api/links/", "");
-          const statusCode = await deleteLink(alias, userId);
-          responseHelper(res, statusCode, { "Content-Type": "text/plain" });
+          const alias = url.slice(1);
+          const response = await deleteLink(alias, userId);
+          responseHelper(res, response.status, { "Content-Type": "application/json" }, response.message);
           return;
         }
 
         if (req.method === "GET") {
           const results = await retrieveLinks(userId);
-          responseHelper(res, results.statusCode, { "Content-Type": "text/plain" }, JSON.stringify(results.links));
+          responseHelper(res, results.status, { "Content-Type": "application/json" }, results.message);
           return;
         }
 
         if (req.method === "POST") {
-          let body = "";
+          const body = await extractBody(req);
 
-          req.on("data", (chunk) => {
-            body += chunk;
-          });
-
-          req.on("end", async () => {
-            const data = JSON.parse(body);
-            const statusCode = await insertLink(data.url, data.customAlias, userId, data.expiry);
-            responseHelper(res, statusCode, { "Content-Type": "text/plain" })
-          });
-
+          const data = JSON.parse(body);
+          const response = await insertLink(data.url, data.customAlias, userId, data.expiry);
+          responseHelper(res, response.status, { "Content-Type": "text/plain" }, response.message);          
           return;
         }
       } else if (req.url.startsWith("/api/auth")) {
@@ -337,8 +350,8 @@ async function startServer() {
         if (req.method === "POST" && req.url === "/api/auth/register") {
           req.on("end", async () => {
             const data = JSON.parse(body);
-            const statusCode = await registerUser(data.username, data.password);
-            responseHelper(res, statusCode, { "Content-Type": "text/plain" });
+            const response = await registerUser(data.username, data.password);
+            responseHelper(res, response.status, { "Content-Type": "text/plain" }, response.message);
           });
         }
         if (req.method === "POST" && req.url === "/api/auth/login") {
@@ -346,13 +359,12 @@ async function startServer() {
             const data = JSON.parse(body);
             const response = await loginUser(data.username, data.password);
             if (response.token) {
-              responseHelper(res, response.status, { "Content-Type": "application/json" }, JSON.stringify({
-                message: "Login successful.",
+              responseHelper(res, response.status, { "Content-Type": "application/json" }, {
+                message: response.message,
                 token: response.token
-              }));
+              });
             } else {
-              responseHelper(res, response.status, { "Content-Type": "application/json" }, 
-                JSON.stringify({ message: "Invalid username or password" }));
+              responseHelper(res, response.status, { "Content-Type": "application/json" }, response.message);
             }
           });
         }
@@ -367,7 +379,7 @@ async function startServer() {
         );
 
         if (!results.length) {
-          responseHelper(res, 404, { "Content-Type": "text/plain" }, "Link not found");
+          responseHelper(res, 404, { "Content-Type": "text/plain" }, "Invalid link");
           return;
         }
 
@@ -388,10 +400,10 @@ async function startServer() {
 
         incrementClicks(alias);
 
-        responseHelper(res, 302, { Location: results[0].url })
+        responseHelper(res, 302, { Location: results[0].url }, "Redirecting...")
         return;
       } else {
-        responseHelper(res, 404, { "Content-Type": "text/plain"})
+        responseHelper(res, 404, { "Content-Type": "text/plain"}, "Invalid link")
       }
     } catch (err) {
       console.error(err);
