@@ -2,6 +2,7 @@
 const http = require("http");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const qr = require("qrcode");
 
 const ID_LENGTH = 6;
 const PORT = 8000;
@@ -84,9 +85,9 @@ function generateId(length) {
   return id;
 }
 
-function responseHelper(res, statusCode, header, message="") {
+function responseHelper(res, statusCode, header, content="") {
   res.writeHead(statusCode, header);
-  res.end(message);
+  res.end(content);
   return;
 }
 
@@ -260,6 +261,35 @@ async function startServer() {
   const server = http.createServer(async (req, res) => {
     try {
       if (req.url.startsWith("/api/links")) {
+        const url = req.url.replace("/api/links", "");
+
+        if (req.method === "GET" && url.endsWith("/qr")) {
+          const alias = url.slice(1, -"/qr".length);
+          const [results] = await connection.query(`
+            SELECT url, expires_at FROM links WHERE alias = ?`,
+          [alias]);
+
+          if (results.length === 0) {
+            responseHelper(res, 404, { "Content-Type": "application/json" }, JSON.stringify({ "error": "Link not found" }));
+            return;
+          }
+          if (results[0].expires_at !== null && results[0].expires_at <= new Date()) {
+            responseHelper(res, 410, { "Content-Type": "application/json" }, JSON.stringify({ "error": "Link has expired" }));
+            return;
+          }
+          
+          const qrBuffer = await qr.toBuffer(`http://${process.env.DB_HOST}:${PORT}/${alias}`, 
+            {
+              type: "png",
+              width: 300,
+              margin: 1
+            }
+          );
+
+          responseHelper(res, 200, { "Content-Type": "image/png", "Content-Length": qrBuffer.length }, qrBuffer);
+          return;
+        }
+
         const user = authenticateUser(req);
         if (!user) {
           responseHelper(res, 401, { "Content-Type": "text/plain" });
