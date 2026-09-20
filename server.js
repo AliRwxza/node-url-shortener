@@ -31,20 +31,32 @@ async function migrate() {
         PRIMARY KEY (id),
         UNIQUE KEY (username)
       )`);
-      await connection.query(`
-        CREATE TABLE IF NOT EXISTS links (
-          id INT UNSIGNED AUTO_INCREMENT,
-          alias VARCHAR(20) NOT NULL UNIQUE,
-          url TEXT NOT NULL,
-          user_id INT UNSIGNED DEFAULT NULL,
-          click_count INT UNSIGNED DEFAULT 0,
-          created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
-          expires_at TIMESTAMP NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL 1 HOUR),
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS links (
+        id INT UNSIGNED AUTO_INCREMENT,
+        alias VARCHAR(20) NOT NULL UNIQUE,
+        url TEXT NOT NULL,
+        user_id INT UNSIGNED DEFAULT NULL,
+        click_count INT UNSIGNED DEFAULT 0,
+        created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL 1 HOUR),
 
-          PRIMARY KEY (id),
-          FOREIGN KEY (user_id) REFERENCES users(id)
-        )`);
+        PRIMARY KEY (id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )`);
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS click_events (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      link_id INT UNSIGNED NOT NULL,
+      ip_address VARCHAR(45) DEFAULT NULL,
+      user_agent TEXT DEFAULT NULL,
+      referrer TEXT DEFAULT NULL,
+      created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
 
+        FOREIGN KEY (link_id)
+          REFERENCES links(id)
+          ON DELETE CASCADE
+      )`);
     console.log("Database migration completed.");
     return connection;
   } catch(err) {
@@ -248,7 +260,6 @@ async function startServer() {
   const server = http.createServer(async (req, res) => {
     try {
       if (req.url.startsWith("/api/links")) {
-        const trimmedUrl = req.url.replace("/api/links", "");
         const user = authenticateUser(req);
         if (!user) {
           responseHelper(res, 401, { "Content-Type": "text/plain" });
@@ -321,7 +332,7 @@ async function startServer() {
         const alias = req.url.substring(1);
 
         const [results] = await connection.query(
-          "SELECT url, expires_at FROM links WHERE alias = ?",
+          "SELECT id, url, expires_at FROM links WHERE alias = ?",
           [alias],
         );
 
@@ -335,6 +346,15 @@ async function startServer() {
           responseHelper(res, 404, { "Content-Type": "text/plain" }, "This short link has expired");
           return;
         }
+
+        await connection.query(`
+          INSERT INTO click_events (link_id, ip_address, user_agent, referrer)
+          VALUES (?, ?, ?, ?)`,[
+            results[0].id, 
+            req.socket.remoteAddress, 
+            req.headers["user-agent"], 
+            req.headers.referer
+          ]);
 
         incrementClicks(alias);
 
