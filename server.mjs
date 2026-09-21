@@ -57,6 +57,9 @@ function extractBody(req) {
 }
 
 async function insertLink(url, alias, userId, expiry) {
+  if (!url) {
+    return {status: 400, message: "URL not provided"}
+  }
   if (!alias) {
     let repeat = 0;
     let genId = "";
@@ -139,7 +142,8 @@ async function retrieveLinks(userId) {
       attributes:[
         "alias",
         "url",
-        "created_at"
+        "created_at",
+        "expires_at"
       ],
       where: {userId}
     });
