@@ -114,6 +114,10 @@ async function deleteLink(alias, userId) {
   }
   try {
     const link = await Link.findOne({
+      attributes: [
+        "alias",
+        "userId"
+      ],
       where: {alias}
     });
     if (!link || !link.userId) {
@@ -142,8 +146,8 @@ async function retrieveLinks(userId) {
       attributes:[
         "alias",
         "url",
-        "created_at",
-        "expires_at"
+        "createdAt",
+        "expiresAt"
       ],
       where: {userId}
     });
@@ -240,8 +244,7 @@ async function startServer() {
           const alias = url.slice(1, -"/qr".length);
           const link = await Link.findOne({
             attributes: [
-              "url",
-              "expires_at"
+              "expiresAt"
             ],
             where: {alias}
           });
@@ -326,7 +329,7 @@ async function startServer() {
           attributes: [
             "id", 
             "url", 
-            "expires_at"
+            "expiresAt"
           ],
           where: {alias}
         });
@@ -336,8 +339,7 @@ async function startServer() {
           return;
         }
 
-        const expiresAt = link.expireAat;
-        if (expiresAt && expiresAt <= new Date()) {
+        if (link.expiresAt && link.expiresAt <= new Date()) {
           responseHelper(res, 404, { "Content-Type": "text/plain" }, "This short link has expired");
           return;
         }
